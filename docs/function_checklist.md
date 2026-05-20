@@ -20,3 +20,13 @@
 | F14  | 历史记录       | 历史记录页              | database.py             | 待完成   | 是           |
 | F15  | Excel/CSV 导出 | 批量分析页 / 历史记录页 | excel_exporter.py       | 待完成   | 是           |
 | F16  | Word 报告导出  | 单图分析页              | word_report.py          | 待完成   | 是           |
+
+第 1 次：init pyside6 desktop project structure
+第 2 次：add traditional image segmentation module
+第 3 次：add scale calibration and phenotype metrics
+第 4 次：add sqlite record management
+第 5 次：add batch image analysis workflow
+第 6 次：add csv and excel export
+第 7 次：add single sample word report export
+第 8 次：update documentation and screenshots for v1.0
+第 9 次：release version 1.0.0
