@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QMessageBox,
+    QDoubleSpinBox,
 )
 
 from rice_phenotype.core.segmentation import (
@@ -22,6 +23,8 @@ from rice_phenotype.core.segmentation import (
     SegmentationConfig,
     SegmentationResult,
 )
+from rice_phenotype.core.calibration import ScaleCalibrator
+from rice_phenotype.core.metrics import PhenotypeCalculator, PhenotypeMetrics
 from rice_phenotype.utils.image_qt import ndarray_to_pixmap
 
 
@@ -32,8 +35,11 @@ class SingleAnalysisPage(QWidget):
         self.current_image_path: Path | None = None
         self.current_image_rgb: np.ndarray | None = None
         self.current_segmentation: SegmentationResult | None = None
+        self.current_metrics: PhenotypeMetrics | None = None
 
         self.segmenter = SeedlingSegmenter()
+        self.calibrator = ScaleCalibrator()
+        self.calculator = PhenotypeCalculator()
 
         self._build_ui()
 
@@ -47,7 +53,7 @@ class SingleAnalysisPage(QWidget):
         root_layout.addWidget(title)
 
         desc = QLabel(
-            "导入水稻秧苗图像，完成绿色植株区域分割、掩膜预览和后续表型指标计算。"
+            "导入水稻秧苗图像，完成绿色植株区域分割、比例尺换算和二维表型指标计算。"
         )
         desc.setObjectName("PageDesc")
         desc.setWordWrap(True)
@@ -68,6 +74,7 @@ class SingleAnalysisPage(QWidget):
         self.btn_calculate = QPushButton("计算指标")
         self.btn_calculate.setObjectName("SecondaryButton")
         self.btn_calculate.setEnabled(False)
+        self.btn_calculate.clicked.connect(self.calculate_metrics)
 
         self.btn_save = QPushButton("保存记录")
         self.btn_save.setObjectName("SecondaryButton")
@@ -85,6 +92,35 @@ class SingleAnalysisPage(QWidget):
         toolbar.addStretch()
 
         root_layout.addLayout(toolbar)
+
+        scale_card = QFrame()
+        scale_card.setObjectName("Card")
+        scale_layout = QHBoxLayout(scale_card)
+        scale_layout.setContentsMargins(18, 12, 18, 12)
+        scale_layout.setSpacing(12)
+
+        scale_title = QLabel("比例尺设置：")
+        scale_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #111827;")
+        scale_layout.addWidget(scale_title)
+
+        self.scale_spin = QDoubleSpinBox()
+        self.scale_spin.setDecimals(5)
+        self.scale_spin.setMinimum(0.00001)
+        self.scale_spin.setMaximum(10.0)
+        self.scale_spin.setSingleStep(0.001)
+        self.scale_spin.setValue(0.05000)
+        self.scale_spin.setSuffix(" cm/pixel")
+        self.scale_spin.setFixedWidth(180)
+        scale_layout.addWidget(self.scale_spin)
+
+        scale_note = QLabel(
+            "说明：当前采用手动比例尺。后续可扩展为鼠标标尺线段标定。"
+        )
+        scale_note.setStyleSheet("font-size: 13px; color: #4B5563;")
+        scale_layout.addWidget(scale_note)
+        scale_layout.addStretch()
+
+        root_layout.addWidget(scale_card)
 
         content_layout = QHBoxLayout()
         content_layout.setSpacing(16)
@@ -104,13 +140,14 @@ class SingleAnalysisPage(QWidget):
         metrics_layout = QVBoxLayout(metrics_card)
         metrics_layout.setContentsMargins(20, 16, 20, 16)
 
-        metric_title = QLabel("分析信息")
+        metric_title = QLabel("分析信息与表型指标")
         metric_title.setStyleSheet("font-size: 17px; font-weight: 700; color: #111827;")
         metrics_layout.addWidget(metric_title)
 
         self.metrics_label = QLabel(
             "尚未导入图像。\n\n"
-            "当前阶段已接入：HSV / ExG 绿色区域分割、形态学去噪、连通域过滤、掩膜与叠加图显示。"
+            "当前页面支持：图像导入、绿色区域分割、比例尺换算、株高估算、冠幅估算、"
+            "投影面积、绿色覆盖率、叶色指数和软件内部长势评分。"
         )
         self.metrics_label.setWordWrap(True)
         self.metrics_label.setStyleSheet("font-size: 14px; color: #374151; line-height: 1.6;")
@@ -132,7 +169,7 @@ class SingleAnalysisPage(QWidget):
 
         image_label = QLabel("暂无图像")
         image_label.setAlignment(Qt.AlignCenter)
-        image_label.setMinimumHeight(340)
+        image_label.setMinimumHeight(320)
         image_label.setStyleSheet(
             """
             QLabel {
@@ -177,6 +214,7 @@ class SingleAnalysisPage(QWidget):
         self.current_image_path = path
         self.current_image_rgb = image_rgb
         self.current_segmentation = None
+        self.current_metrics = None
 
         self._show_ndarray_image(self.original_panel["label"], image_rgb)
 
@@ -221,6 +259,7 @@ class SingleAnalysisPage(QWidget):
             return
 
         self.current_segmentation = result
+        self.current_metrics = None
 
         self._show_ndarray_image(self.mask_panel["label"], result.mask)
         self._show_ndarray_image(self.overlay_panel["label"], result.overlay)
@@ -229,6 +268,8 @@ class SingleAnalysisPage(QWidget):
 
         if result.success:
             self.btn_calculate.setEnabled(True)
+            self.btn_save.setEnabled(False)
+            self.btn_report.setEnabled(False)
 
             self.metrics_label.setText(
                 "分割完成。\n\n"
@@ -239,10 +280,12 @@ class SingleAnalysisPage(QWidget):
                 f"图像有效面积：{result.valid_area_px} px\n"
                 f"秧苗掩膜面积：{result.plant_area_px} px\n"
                 f"外接矩形：x={x}, y={y}, w={w}, h={h}\n\n"
-                "下一步：接入比例尺设置与表型指标计算。"
+                "下一步：确认比例尺后，点击“计算指标”。"
             )
         else:
             self.btn_calculate.setEnabled(False)
+            self.btn_save.setEnabled(False)
+            self.btn_report.setEnabled(False)
 
             self.metrics_label.setText(
                 "分割未检测到有效区域。\n\n"
@@ -250,12 +293,73 @@ class SingleAnalysisPage(QWidget):
                 "建议：更换图像、调整拍摄背景，或后续在参数设置页中调整 HSV / ExG 阈值。"
             )
 
+    def calculate_metrics(self) -> None:
+        if self.current_image_rgb is None:
+            QMessageBox.information(self, "提示", "请先导入图像。")
+            return
+
+        if self.current_segmentation is None or not self.current_segmentation.success:
+            QMessageBox.information(self, "提示", "请先完成有效分割。")
+            return
+
+        cm_per_pixel = float(self.scale_spin.value())
+
+        try:
+            self.calibrator.validate_cm_per_pixel(cm_per_pixel)
+
+            metrics = self.calculator.calculate(
+                image_rgb=self.current_image_rgb,
+                mask=self.current_segmentation.mask,
+                cm_per_pixel=cm_per_pixel,
+                valid_area_px=self.current_segmentation.valid_area_px,
+            )
+
+        except Exception as exc:
+            QMessageBox.critical(self, "指标计算失败", f"计算表型指标时发生错误：\n{exc}")
+            return
+
+        self.current_metrics = metrics
+
+        self.metrics_label.setText(self._format_metrics(metrics, cm_per_pixel))
+
+        self.btn_save.setEnabled(True)
+        self.btn_report.setEnabled(False)
+
+    def _format_metrics(
+        self,
+        metrics: PhenotypeMetrics,
+        cm_per_pixel: float,
+    ) -> str:
+        return (
+            "表型指标计算完成。\n\n"
+            f"当前比例尺：{cm_per_pixel:.5f} cm/pixel\n\n"
+            "【形态指标】\n"
+            f"株高估算：{metrics.plant_height_cm:.2f} cm "
+            f"({metrics.plant_height_px:.0f} px)\n"
+            f"冠幅估算：{metrics.canopy_width_cm:.2f} cm "
+            f"({metrics.canopy_width_px:.0f} px)\n"
+            f"投影面积：{metrics.projected_area_cm2:.2f} cm² "
+            f"({metrics.projected_area_px:.0f} px)\n"
+            f"绿色覆盖率：{metrics.green_coverage * 100:.2f}%\n\n"
+            "【颜色指标】\n"
+            f"ExG 叶色指数均值：{metrics.exg_mean:.2f}\n"
+            f"Green Ratio：{metrics.green_ratio:.4f}\n\n"
+            "【软件内部评分】\n"
+            f"掩膜外接矩形填充率：{metrics.bbox_fill_ratio * 100:.2f}%\n"
+            f"长势评分：{metrics.growth_score:.2f} / 100\n\n"
+            "说明：以上结果基于二维图像分割和比例尺换算，仅用于样本记录、"
+            "教学演示和科研辅助整理，不作为农学诊断或生产决策依据。"
+        )
+
     def _show_ndarray_image(self, label: QLabel, image: np.ndarray) -> None:
         pixmap = ndarray_to_pixmap(image)
 
+        target_width = max(label.width(), 320)
+        target_height = max(label.height(), 260)
+
         scaled = pixmap.scaled(
-            label.width(),
-            label.height(),
+            target_width,
+            target_height,
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation,
         )
