@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
 )
 
+from rice_phenotype import __version__
 from rice_phenotype.core.segmentation import (
     SeedlingSegmenter,
     SegmentationConfig,
@@ -25,7 +27,9 @@ from rice_phenotype.core.segmentation import (
 )
 from rice_phenotype.core.calibration import ScaleCalibrator
 from rice_phenotype.core.metrics import PhenotypeCalculator, PhenotypeMetrics
+from rice_phenotype.storage.database import RecordRepository
 from rice_phenotype.utils.image_qt import ndarray_to_pixmap
+from rice_phenotype.utils.paths import image_output_dir
 
 
 class SingleAnalysisPage(QWidget):
@@ -36,10 +40,12 @@ class SingleAnalysisPage(QWidget):
         self.current_image_rgb: np.ndarray | None = None
         self.current_segmentation: SegmentationResult | None = None
         self.current_metrics: PhenotypeMetrics | None = None
+        self.current_config: SegmentationConfig | None = None
 
         self.segmenter = SeedlingSegmenter()
         self.calibrator = ScaleCalibrator()
         self.calculator = PhenotypeCalculator()
+        self.repository = RecordRepository()
 
         self._build_ui()
 
@@ -79,6 +85,7 @@ class SingleAnalysisPage(QWidget):
         self.btn_save = QPushButton("保存记录")
         self.btn_save.setObjectName("SecondaryButton")
         self.btn_save.setEnabled(False)
+        self.btn_save.clicked.connect(self.save_record)
 
         self.btn_report = QPushButton("导出报告")
         self.btn_report.setObjectName("SecondaryButton")
@@ -113,9 +120,7 @@ class SingleAnalysisPage(QWidget):
         self.scale_spin.setFixedWidth(180)
         scale_layout.addWidget(self.scale_spin)
 
-        scale_note = QLabel(
-            "说明：当前采用手动比例尺。后续可扩展为鼠标标尺线段标定。"
-        )
+        scale_note = QLabel("说明：当前采用手动比例尺，结果用于二维图像辅助量化。")
         scale_note.setStyleSheet("font-size: 13px; color: #4B5563;")
         scale_layout.addWidget(scale_note)
         scale_layout.addStretch()
@@ -215,6 +220,7 @@ class SingleAnalysisPage(QWidget):
         self.current_image_rgb = image_rgb
         self.current_segmentation = None
         self.current_metrics = None
+        self.current_config = None
 
         self._show_ndarray_image(self.original_panel["label"], image_rgb)
 
@@ -259,6 +265,7 @@ class SingleAnalysisPage(QWidget):
             return
 
         self.current_segmentation = result
+        self.current_config = config
         self.current_metrics = None
 
         self._show_ndarray_image(self.mask_panel["label"], result.mask)
@@ -325,6 +332,87 @@ class SingleAnalysisPage(QWidget):
         self.btn_save.setEnabled(True)
         self.btn_report.setEnabled(False)
 
+    def save_record(self) -> None:
+        if self.current_image_path is None:
+            QMessageBox.information(self, "提示", "请先导入图像。")
+            return
+
+        if self.current_image_rgb is None:
+            QMessageBox.information(self, "提示", "当前图像为空。")
+            return
+
+        if self.current_segmentation is None or not self.current_segmentation.success:
+            QMessageBox.information(self, "提示", "请先完成有效分割。")
+            return
+
+        if self.current_metrics is None:
+            QMessageBox.information(self, "提示", "请先计算表型指标。")
+            return
+
+        if self.current_config is None:
+            QMessageBox.information(self, "提示", "缺少分割参数。")
+            return
+
+        try:
+            save_time = datetime.now()
+            timestamp = save_time.strftime("%Y%m%d_%H%M%S")
+            base_name = self.current_image_path.stem
+
+            output_folder = image_output_dir()
+
+            mask_path = output_folder / f"{base_name}_{timestamp}_mask.png"
+            overlay_path = output_folder / f"{base_name}_{timestamp}_overlay.png"
+
+            self._save_mask_image(mask_path, self.current_segmentation.mask)
+            self._save_rgb_image(overlay_path, self.current_segmentation.overlay)
+
+            height, width = self.current_image_rgb.shape[:2]
+            metrics = self.current_metrics
+            config = self.current_config
+            cm_per_pixel = float(self.scale_spin.value())
+
+            record = {
+                "sample_name": self.current_image_path.name,
+                "image_path": str(self.current_image_path),
+                "mask_path": str(mask_path),
+                "overlay_path": str(overlay_path),
+                "analysis_time": save_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "image_width": width,
+                "image_height": height,
+                "cm_per_pixel": cm_per_pixel,
+                "segmentation_method": config.method,
+                "hsv_lower": str(config.hsv_lower),
+                "hsv_upper": str(config.hsv_upper),
+                "exg_threshold": config.exg_threshold,
+                "plant_height_px": metrics.plant_height_px,
+                "plant_height_cm": metrics.plant_height_cm,
+                "canopy_width_px": metrics.canopy_width_px,
+                "canopy_width_cm": metrics.canopy_width_cm,
+                "projected_area_px": metrics.projected_area_px,
+                "projected_area_cm2": metrics.projected_area_cm2,
+                "green_coverage": metrics.green_coverage,
+                "exg_mean": metrics.exg_mean,
+                "green_ratio": metrics.green_ratio,
+                "bbox_fill_ratio": metrics.bbox_fill_ratio,
+                "growth_score": metrics.growth_score,
+                "note": "",
+                "software_version": __version__,
+            }
+
+            record_id = self.repository.insert_record(record)
+
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", f"保存分析记录时发生错误：\n{exc}")
+            return
+
+        QMessageBox.information(
+            self,
+            "保存成功",
+            f"分析记录已保存。\n记录编号：{record_id}"
+        )
+
+        self.btn_save.setEnabled(False)
+
     def _format_metrics(
         self,
         metrics: PhenotypeMetrics,
@@ -366,3 +454,23 @@ class SingleAnalysisPage(QWidget):
 
         label.setPixmap(scaled)
         label.setText("")
+
+    @staticmethod
+    def _save_mask_image(path: Path, mask: np.ndarray) -> None:
+        success, encoded = cv2.imencode(".png", mask)
+
+        if not success:
+            raise RuntimeError("掩膜图编码失败。")
+
+        encoded.tofile(str(path))
+
+    @staticmethod
+    def _save_rgb_image(path: Path, image_rgb: np.ndarray) -> None:
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+
+        success, encoded = cv2.imencode(".png", image_bgr)
+
+        if not success:
+            raise RuntimeError("图像编码失败。")
+
+        encoded.tofile(str(path))
