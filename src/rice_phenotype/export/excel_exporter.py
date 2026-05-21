@@ -4,6 +4,8 @@
 Excel / CSV 导出模块
 
 本模块负责将批量分析结果或历史记录导出为 Excel / CSV 文件。
+历史记录导出时，“序号”为当前导出结果的连续显示序号；
+数据库内部记录ID仅用于追踪，不作为用户侧连续序号。
 """
 
 from pathlib import Path
@@ -44,7 +46,7 @@ class ResultExporter:
         records: list[dict[str, Any]],
         output_path: Path,
     ) -> Path:
-        rows = [ResultExporter._record_to_row(record) for record in records]
+        rows = ResultExporter._records_to_rows(records)
         df = pd.DataFrame(rows)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_excel(output_path, index=False)
@@ -55,7 +57,7 @@ class ResultExporter:
         records: list[dict[str, Any]],
         output_path: Path,
     ) -> Path:
-        rows = [ResultExporter._record_to_row(record) for record in records]
+        rows = ResultExporter._records_to_rows(records)
         df = pd.DataFrame(rows)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(output_path, index=False, encoding="utf-8-sig")
@@ -96,9 +98,23 @@ class ResultExporter:
         return rows
 
     @staticmethod
-    def _record_to_row(record: dict[str, Any]) -> dict[str, Any]:
+    def _records_to_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+
+        for index, record in enumerate(records, start=1):
+            row = ResultExporter._record_to_row(record, display_index=index)
+            rows.append(row)
+
+        return rows
+
+    @staticmethod
+    def _record_to_row(
+        record: dict[str, Any],
+        display_index: int,
+    ) -> dict[str, Any]:
         return {
-            "记录ID": record.get("id", ""),
+            "序号": display_index,
+            "内部记录ID": record.get("id", ""),
             "样本名称": record.get("sample_name", ""),
             "原图路径": record.get("image_path", ""),
             "掩膜路径": record.get("mask_path", ""),

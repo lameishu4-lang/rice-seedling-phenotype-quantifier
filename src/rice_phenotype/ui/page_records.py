@@ -45,7 +45,10 @@ class RecordsPage(QWidget):
         title.setObjectName("PageTitle")
         layout.addWidget(title)
 
-        desc = QLabel("本页用于查看、查询、备注、删除、导出和管理历史分析记录。")
+        desc = QLabel(
+            "本页用于查看、查询、备注、删除、导出和管理历史分析记录。"
+            "表格序号为当前查询结果的连续显示序号，数据库内部记录ID仅用于数据追踪。"
+        )
         desc.setObjectName("PageDesc")
         desc.setWordWrap(True)
         layout.addWidget(desc)
@@ -106,7 +109,7 @@ class RecordsPage(QWidget):
         self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels(
             [
-                "ID",
+                "序号",
                 "样本名称",
                 "分析时间",
                 "比例尺(cm/px)",
@@ -149,8 +152,11 @@ class RecordsPage(QWidget):
         self.table.setRowCount(len(records))
 
         for row_index, record in enumerate(records):
+            display_index = row_index + 1
+            record_id = record.get("id")
+
             values = [
-                record.get("id", ""),
+                display_index,
                 record.get("sample_name", ""),
                 record.get("analysis_time", ""),
                 self._format_float(record.get("cm_per_pixel"), 5),
@@ -167,10 +173,14 @@ class RecordsPage(QWidget):
 
                 if col_index == 0:
                     item.setTextAlignment(Qt.AlignCenter)
+                    item.setData(Qt.UserRole, record_id)
 
                 self.table.setItem(row_index, col_index, item)
 
-        self.detail_label.setText(f"当前共显示 {len(records)} 条记录。")
+        self.detail_label.setText(
+            f"当前共显示 {len(records)} 条记录。"
+            "表格第一列为连续显示序号，数据库内部记录ID不作为显示序号。"
+        )
 
     def export_excel(self) -> None:
         if not self.records:
@@ -242,9 +252,14 @@ class RecordsPage(QWidget):
         if item is None:
             return None
 
+        record_id = item.data(Qt.UserRole)
+
+        if record_id is None:
+            return None
+
         try:
-            return int(item.text())
-        except ValueError:
+            return int(record_id)
+        except (TypeError, ValueError):
             return None
 
     def get_selected_record(self) -> dict | None:
@@ -256,6 +271,15 @@ class RecordsPage(QWidget):
         return self.repository.get_record(record_id)
 
     def update_detail(self) -> None:
+        selected_rows = self.table.selectionModel().selectedRows()
+
+        if not selected_rows:
+            self.detail_label.setText("请选择一条记录查看摘要。")
+            return
+
+        row_index = selected_rows[0].row()
+        display_index = row_index + 1
+
         record = self.get_selected_record()
 
         if record is None:
@@ -263,7 +287,8 @@ class RecordsPage(QWidget):
             return
 
         text = (
-            f"记录编号：{record.get('id')}\n"
+            f"显示序号：{display_index}\n"
+            f"内部记录ID：{record.get('id')}\n"
             f"样本名称：{record.get('sample_name')}\n"
             f"原图路径：{record.get('image_path')}\n"
             f"掩膜路径：{record.get('mask_path')}\n"
@@ -304,6 +329,15 @@ class RecordsPage(QWidget):
             QMessageBox.warning(self, "保存失败", "备注更新失败。")
 
     def delete_selected_record(self) -> None:
+        selected_rows = self.table.selectionModel().selectedRows()
+
+        if not selected_rows:
+            QMessageBox.information(self, "提示", "请先选择一条记录。")
+            return
+
+        row_index = selected_rows[0].row()
+        display_index = row_index + 1
+
         record = self.get_selected_record()
 
         if record is None:
@@ -313,7 +347,11 @@ class RecordsPage(QWidget):
         reply = QMessageBox.question(
             self,
             "确认删除",
-            f"确定要删除记录 {record.get('id')} 吗？\n该操作只删除数据库记录，不删除原始图像文件。",
+            (
+                f"确定要删除当前显示序号为 {display_index} 的记录吗？\n"
+                f"样本名称：{record.get('sample_name')}\n\n"
+                "该操作只删除数据库记录，不删除原始图像、掩膜图或叠加图文件。"
+            ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -324,7 +362,7 @@ class RecordsPage(QWidget):
         success = self.repository.delete_record(int(record["id"]))
 
         if success:
-            QMessageBox.information(self, "删除成功", "记录已删除。")
+            QMessageBox.information(self, "删除成功", "记录已删除，显示序号已重新排列。")
             self.refresh_records()
         else:
             QMessageBox.warning(self, "删除失败", "记录删除失败。")
