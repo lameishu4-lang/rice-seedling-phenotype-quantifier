@@ -5,6 +5,9 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from docx import Document
+from docx.shared import Inches
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -29,7 +32,7 @@ from rice_phenotype.core.calibration import ScaleCalibrator
 from rice_phenotype.core.metrics import PhenotypeCalculator, PhenotypeMetrics
 from rice_phenotype.storage.database import RecordRepository
 from rice_phenotype.utils.image_qt import ndarray_to_pixmap
-from rice_phenotype.utils.paths import image_output_dir
+from rice_phenotype.utils.paths import image_output_dir, output_dir
 
 
 class SingleAnalysisPage(QWidget):
@@ -42,12 +45,20 @@ class SingleAnalysisPage(QWidget):
         self.current_metrics: PhenotypeMetrics | None = None
         self.current_config: SegmentationConfig | None = None
 
+        self.record_saved = False
+        self.report_exported = False
+        self.saved_record_id: int | None = None
+
+        self.last_mask_path: Path | None = None
+        self.last_overlay_path: Path | None = None
+
         self.segmenter = SeedlingSegmenter()
         self.calibrator = ScaleCalibrator()
         self.calculator = PhenotypeCalculator()
         self.repository = RecordRepository()
 
         self._build_ui()
+        self._reset_to_initial_state()
 
     def _build_ui(self) -> None:
         root_layout = QVBoxLayout(self)
@@ -59,7 +70,7 @@ class SingleAnalysisPage(QWidget):
         root_layout.addWidget(title)
 
         desc = QLabel(
-            "导入水稻秧苗图像，完成绿色植株区域分割、比例尺换算和二维表型指标计算。"
+            "导入水稻秧苗图像，完成绿色植株区域分割、比例尺换算、二维表型指标计算、记录保存和报告导出。"
         )
         desc.setObjectName("PageDesc")
         desc.setWordWrap(True)
@@ -74,22 +85,19 @@ class SingleAnalysisPage(QWidget):
 
         self.btn_segment = QPushButton("执行分割")
         self.btn_segment.setObjectName("SecondaryButton")
-        self.btn_segment.setEnabled(False)
         self.btn_segment.clicked.connect(self.run_segmentation)
 
         self.btn_calculate = QPushButton("计算指标")
         self.btn_calculate.setObjectName("SecondaryButton")
-        self.btn_calculate.setEnabled(False)
         self.btn_calculate.clicked.connect(self.calculate_metrics)
 
         self.btn_save = QPushButton("保存记录")
         self.btn_save.setObjectName("SecondaryButton")
-        self.btn_save.setEnabled(False)
         self.btn_save.clicked.connect(self.save_record)
 
         self.btn_report = QPushButton("导出报告")
         self.btn_report.setObjectName("SecondaryButton")
-        self.btn_report.setEnabled(False)
+        self.btn_report.clicked.connect(self.export_report)
 
         toolbar.addWidget(self.btn_import)
         toolbar.addWidget(self.btn_segment)
@@ -149,11 +157,7 @@ class SingleAnalysisPage(QWidget):
         metric_title.setStyleSheet("font-size: 17px; font-weight: 700; color: #111827;")
         metrics_layout.addWidget(metric_title)
 
-        self.metrics_label = QLabel(
-            "尚未导入图像。\n\n"
-            "当前页面支持：图像导入、绿色区域分割、比例尺换算、株高估算、冠幅估算、"
-            "投影面积、绿色覆盖率、叶色指数和软件内部长势评分。"
-        )
+        self.metrics_label = QLabel()
         self.metrics_label.setWordWrap(True)
         self.metrics_label.setStyleSheet("font-size: 14px; color: #374151; line-height: 1.6;")
         metrics_layout.addWidget(self.metrics_label)
@@ -192,12 +196,75 @@ class SingleAnalysisPage(QWidget):
             "label": image_label,
         }
 
+    def _reset_to_initial_state(self) -> None:
+        self.current_image_path = None
+        self.current_image_rgb = None
+        self.current_segmentation = None
+        self.current_metrics = None
+        self.current_config = None
+
+        self.record_saved = False
+        self.report_exported = False
+        self.saved_record_id = None
+        self.last_mask_path = None
+        self.last_overlay_path = None
+
+        self.btn_segment.setEnabled(False)
+        self.btn_calculate.setEnabled(False)
+        self.btn_save.setEnabled(False)
+        self.btn_report.setEnabled(False)
+
+        self.metrics_label.setText(
+            "尚未导入图像。\n\n"
+            "操作流程：导入图像 → 执行分割 → 计算指标 → 保存记录 / 导出报告。\n\n"
+            "说明：保存记录和导出报告必须在表型指标计算完成后才能执行，且同一轮分析结果只能各执行一次。"
+        )
+
+    def _reset_after_import(self) -> None:
+        self.current_segmentation = None
+        self.current_metrics = None
+        self.current_config = None
+
+        self.record_saved = False
+        self.report_exported = False
+        self.saved_record_id = None
+        self.last_mask_path = None
+        self.last_overlay_path = None
+
+        self.btn_segment.setEnabled(True)
+        self.btn_calculate.setEnabled(False)
+        self.btn_save.setEnabled(False)
+        self.btn_report.setEnabled(False)
+
+    def _reset_after_segmentation(self) -> None:
+        self.current_metrics = None
+
+        self.record_saved = False
+        self.report_exported = False
+        self.saved_record_id = None
+        self.last_mask_path = None
+        self.last_overlay_path = None
+
+        self.btn_calculate.setEnabled(True)
+        self.btn_save.setEnabled(False)
+        self.btn_report.setEnabled(False)
+
+    def _reset_after_metric_calculation(self) -> None:
+        self.record_saved = False
+        self.report_exported = False
+        self.saved_record_id = None
+        self.last_mask_path = None
+        self.last_overlay_path = None
+
+        self.btn_save.setEnabled(True)
+        self.btn_report.setEnabled(True)
+
     def import_image(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "选择水稻秧苗图像",
             "",
-            "Image Files (*.jpg *.jpeg *.png *.bmp)"
+            "Image Files (*.jpg *.jpeg *.png *.bmp)",
         )
 
         if not file_path:
@@ -218,9 +285,6 @@ class SingleAnalysisPage(QWidget):
 
         self.current_image_path = path
         self.current_image_rgb = image_rgb
-        self.current_segmentation = None
-        self.current_metrics = None
-        self.current_config = None
 
         self._show_ndarray_image(self.original_panel["label"], image_rgb)
 
@@ -230,10 +294,7 @@ class SingleAnalysisPage(QWidget):
         self.overlay_panel["label"].setPixmap(QPixmap())
         self.overlay_panel["label"].setText("待执行分割")
 
-        self.btn_segment.setEnabled(True)
-        self.btn_calculate.setEnabled(False)
-        self.btn_save.setEnabled(False)
-        self.btn_report.setEnabled(False)
+        self._reset_after_import()
 
         height, width = image_rgb.shape[:2]
 
@@ -266,7 +327,6 @@ class SingleAnalysisPage(QWidget):
 
         self.current_segmentation = result
         self.current_config = config
-        self.current_metrics = None
 
         self._show_ndarray_image(self.mask_panel["label"], result.mask)
         self._show_ndarray_image(self.overlay_panel["label"], result.overlay)
@@ -274,9 +334,7 @@ class SingleAnalysisPage(QWidget):
         x, y, w, h = result.bbox
 
         if result.success:
-            self.btn_calculate.setEnabled(True)
-            self.btn_save.setEnabled(False)
-            self.btn_report.setEnabled(False)
+            self._reset_after_segmentation()
 
             self.metrics_label.setText(
                 "分割完成。\n\n"
@@ -320,51 +378,26 @@ class SingleAnalysisPage(QWidget):
                 cm_per_pixel=cm_per_pixel,
                 valid_area_px=self.current_segmentation.valid_area_px,
             )
-
         except Exception as exc:
             QMessageBox.critical(self, "指标计算失败", f"计算表型指标时发生错误：\n{exc}")
             return
 
         self.current_metrics = metrics
-
+        self._reset_after_metric_calculation()
         self.metrics_label.setText(self._format_metrics(metrics, cm_per_pixel))
 
-        self.btn_save.setEnabled(True)
-        self.btn_report.setEnabled(False)
-
     def save_record(self) -> None:
-        if self.current_image_path is None:
-            QMessageBox.information(self, "提示", "请先导入图像。")
+        if self.record_saved:
+            QMessageBox.information(self, "提示", "当前分析结果已经保存过记录。")
+            self.btn_save.setEnabled(False)
             return
 
-        if self.current_image_rgb is None:
-            QMessageBox.information(self, "提示", "当前图像为空。")
-            return
-
-        if self.current_segmentation is None or not self.current_segmentation.success:
-            QMessageBox.information(self, "提示", "请先完成有效分割。")
-            return
-
-        if self.current_metrics is None:
-            QMessageBox.information(self, "提示", "请先计算表型指标。")
-            return
-
-        if self.current_config is None:
-            QMessageBox.information(self, "提示", "缺少分割参数。")
+        if not self._has_complete_analysis():
             return
 
         try:
+            mask_path, overlay_path = self._ensure_analysis_images_saved()
             save_time = datetime.now()
-            timestamp = save_time.strftime("%Y%m%d_%H%M%S")
-            base_name = self.current_image_path.stem
-
-            output_folder = image_output_dir()
-
-            mask_path = output_folder / f"{base_name}_{timestamp}_mask.png"
-            overlay_path = output_folder / f"{base_name}_{timestamp}_overlay.png"
-
-            self._save_mask_image(mask_path, self.current_segmentation.mask)
-            self._save_rgb_image(overlay_path, self.current_segmentation.overlay)
 
             height, width = self.current_image_rgb.shape[:2]
             metrics = self.current_metrics
@@ -400,18 +433,193 @@ class SingleAnalysisPage(QWidget):
             }
 
             record_id = self.repository.insert_record(record)
-
         except Exception as exc:
             QMessageBox.critical(self, "保存失败", f"保存分析记录时发生错误：\n{exc}")
             return
 
+        self.saved_record_id = record_id
+        self.record_saved = True
+        self.btn_save.setEnabled(False)
+
         QMessageBox.information(
             self,
             "保存成功",
-            f"分析记录已保存。\n记录编号：{record_id}"
+            f"分析记录已保存。\n数据库记录ID：{record_id}\n\n"
+            "说明：数据库记录ID用于内部追踪，不等同于历史记录表中的连续显示序号。"
         )
 
-        self.btn_save.setEnabled(False)
+    def export_report(self) -> None:
+        if self.report_exported:
+            QMessageBox.information(self, "提示", "当前分析结果已经导出过报告。")
+            self.btn_report.setEnabled(False)
+            return
+
+        if not self._has_complete_analysis():
+            return
+
+        report_folder = output_dir() / "reports"
+        report_folder.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = self.current_image_path.stem if self.current_image_path else "sample"
+        default_path = report_folder / f"{base_name}_{timestamp}_report.docx"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出单样本 Word 报告",
+            str(default_path),
+            "Word Documents (*.docx)",
+        )
+
+        if not file_path:
+            return
+
+        output_path = Path(file_path)
+
+        if output_path.suffix.lower() != ".docx":
+            output_path = output_path.with_suffix(".docx")
+
+        try:
+            mask_path, overlay_path = self._ensure_analysis_images_saved()
+            self._create_word_report(
+                output_path=output_path,
+                mask_path=mask_path,
+                overlay_path=overlay_path,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"导出 Word 报告时发生错误：\n{exc}")
+            return
+
+        self.report_exported = True
+        self.btn_report.setEnabled(False)
+
+        QMessageBox.information(
+            self,
+            "导出成功",
+            f"单样本图文报告已导出：\n{output_path}"
+        )
+
+    def _has_complete_analysis(self) -> bool:
+        if self.current_image_path is None:
+            QMessageBox.information(self, "提示", "请先导入图像。")
+            return False
+
+        if self.current_image_rgb is None:
+            QMessageBox.information(self, "提示", "当前图像为空。")
+            return False
+
+        if self.current_segmentation is None or not self.current_segmentation.success:
+            QMessageBox.information(self, "提示", "请先完成有效分割。")
+            return False
+
+        if self.current_metrics is None:
+            QMessageBox.information(self, "提示", "请先计算表型指标。")
+            return False
+
+        if self.current_config is None:
+            QMessageBox.information(self, "提示", "缺少分割参数。")
+            return False
+
+        return True
+
+    def _ensure_analysis_images_saved(self) -> tuple[Path, Path]:
+        if self.last_mask_path is not None and self.last_overlay_path is not None:
+            if self.last_mask_path.exists() and self.last_overlay_path.exists():
+                return self.last_mask_path, self.last_overlay_path
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = self.current_image_path.stem
+
+        output_folder = image_output_dir()
+
+        mask_path = output_folder / f"{base_name}_{timestamp}_mask.png"
+        overlay_path = output_folder / f"{base_name}_{timestamp}_overlay.png"
+
+        self._save_mask_image(mask_path, self.current_segmentation.mask)
+        self._save_rgb_image(overlay_path, self.current_segmentation.overlay)
+
+        self.last_mask_path = mask_path
+        self.last_overlay_path = overlay_path
+
+        return mask_path, overlay_path
+
+    def _create_word_report(
+        self,
+        output_path: Path,
+        mask_path: Path,
+        overlay_path: Path,
+    ) -> None:
+        metrics = self.current_metrics
+        config = self.current_config
+        cm_per_pixel = float(self.scale_spin.value())
+
+        doc = Document()
+
+        title = doc.add_heading("水稻秧苗图像表型量化分析报告", level=0)
+        title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+
+        doc.add_paragraph(f"报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        doc.add_paragraph(f"软件版本：V{__version__}")
+        doc.add_paragraph(f"样本名称：{self.current_image_path.name}")
+        doc.add_paragraph(f"原始图像路径：{self.current_image_path}")
+
+        doc.add_heading("一、分析参数", level=1)
+        doc.add_paragraph(f"比例尺：{cm_per_pixel:.5f} cm/pixel")
+        doc.add_paragraph(f"分割方法：{config.method}")
+        doc.add_paragraph(f"HSV 下限：{config.hsv_lower}")
+        doc.add_paragraph(f"HSV 上限：{config.hsv_upper}")
+        doc.add_paragraph(f"ExG 阈值：{config.exg_threshold}")
+        doc.add_paragraph(f"最小连通域面积：{config.min_area} px")
+
+        doc.add_heading("二、图像结果", level=1)
+
+        if self.current_image_path.exists():
+            doc.add_paragraph("原始图像：")
+            doc.add_picture(str(self.current_image_path), width=Inches(5.5))
+
+        if mask_path.exists():
+            doc.add_paragraph("分割掩膜图：")
+            doc.add_picture(str(mask_path), width=Inches(5.5))
+
+        if overlay_path.exists():
+            doc.add_paragraph("叠加结果图：")
+            doc.add_picture(str(overlay_path), width=Inches(5.5))
+
+        doc.add_heading("三、表型指标", level=1)
+
+        table = doc.add_table(rows=1, cols=3)
+        table.style = "Table Grid"
+
+        header_cells = table.rows[0].cells
+        header_cells[0].text = "指标类别"
+        header_cells[1].text = "指标名称"
+        header_cells[2].text = "计算结果"
+
+        rows = [
+            ("形态指标", "株高估算", f"{metrics.plant_height_cm:.2f} cm ({metrics.plant_height_px:.0f} px)"),
+            ("形态指标", "冠幅估算", f"{metrics.canopy_width_cm:.2f} cm ({metrics.canopy_width_px:.0f} px)"),
+            ("形态指标", "投影面积", f"{metrics.projected_area_cm2:.2f} cm² ({metrics.projected_area_px:.0f} px)"),
+            ("形态指标", "绿色覆盖率", f"{metrics.green_coverage * 100:.2f}%"),
+            ("颜色指标", "ExG 叶色指数均值", f"{metrics.exg_mean:.2f}"),
+            ("颜色指标", "Green Ratio", f"{metrics.green_ratio:.4f}"),
+            ("内部评分", "外接矩形填充率", f"{metrics.bbox_fill_ratio * 100:.2f}%"),
+            ("内部评分", "长势评分", f"{metrics.growth_score:.2f} / 100"),
+        ]
+
+        for category, name, value in rows:
+            cells = table.add_row().cells
+            cells[0].text = category
+            cells[1].text = name
+            cells[2].text = value
+
+        doc.add_heading("四、结果说明", level=1)
+        doc.add_paragraph(
+            "本报告结果基于二维图像分割、像素统计和比例尺换算生成，仅用于样本记录、"
+            "教学演示和科研辅助整理，不作为田间生产决策、农学诊断或病害判断的唯一依据。"
+        )
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(str(output_path))
 
     def _format_metrics(
         self,
@@ -436,7 +644,8 @@ class SingleAnalysisPage(QWidget):
             f"掩膜外接矩形填充率：{metrics.bbox_fill_ratio * 100:.2f}%\n"
             f"长势评分：{metrics.growth_score:.2f} / 100\n\n"
             "说明：以上结果基于二维图像分割和比例尺换算，仅用于样本记录、"
-            "教学演示和科研辅助整理，不作为农学诊断或生产决策依据。"
+            "教学演示和科研辅助整理，不作为农学诊断或生产决策依据。\n\n"
+            "下一步：可点击“保存记录”写入本地数据库，或点击“导出报告”生成单样本 Word 报告。"
         )
 
     def _show_ndarray_image(self, label: QLabel, image: np.ndarray) -> None:

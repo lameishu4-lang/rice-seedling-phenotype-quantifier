@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
-
+from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget,
@@ -21,7 +21,8 @@ from PySide6.QtWidgets import (
 
 from rice_phenotype.core.batch import BatchAnalyzer, BatchItemResult
 from rice_phenotype.core.segmentation import SegmentationConfig
-
+from rice_phenotype.export.excel_exporter import ResultExporter
+from rice_phenotype.utils.paths import output_dir
 
 class BatchAnalysisPage(QWidget):
     def __init__(self):
@@ -31,7 +32,7 @@ class BatchAnalysisPage(QWidget):
         self.batch_results: list[BatchItemResult] = []
 
         self.analyzer = BatchAnalyzer()
-
+        self.exporter = ResultExporter()
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -98,8 +99,20 @@ class BatchAnalysisPage(QWidget):
         self.btn_clear.setObjectName("SecondaryButton")
         self.btn_clear.clicked.connect(self.clear_results)
 
+        self.btn_export_excel = QPushButton("导出 Excel")
+        self.btn_export_excel.setObjectName("SecondaryButton")
+        self.btn_export_excel.setEnabled(False)
+        self.btn_export_excel.clicked.connect(self.export_excel)
+
+        self.btn_export_csv = QPushButton("导出 CSV")
+        self.btn_export_csv.setObjectName("SecondaryButton")
+        self.btn_export_csv.setEnabled(False)
+        self.btn_export_csv.clicked.connect(self.export_csv)
+
         setting_layout.addWidget(self.btn_start)
         setting_layout.addWidget(self.btn_clear)
+        setting_layout.addWidget(self.btn_export_excel)
+        setting_layout.addWidget(self.btn_export_csv)
 
         setting_note = QLabel(
             "说明：本阶段使用统一比例尺和默认 HSV 分割参数。"
@@ -260,6 +273,8 @@ class BatchAnalysisPage(QWidget):
         )
 
         self.btn_start.setEnabled(True)
+        self.btn_export_excel.setEnabled(len(self.batch_results) > 0)
+        self.btn_export_csv.setEnabled(len(self.batch_results) > 0)
 
     def _append_result_row(
         self,
@@ -298,6 +313,66 @@ class BatchAnalysisPage(QWidget):
         self.table.setRowCount(0)
         self.progress_bar.setValue(0)
         self.status_label.setText("已清空批量分析结果。")
+        self.btn_export_excel.setEnabled(False)
+        self.btn_export_csv.setEnabled(False)
+        
+    def export_excel(self) -> None:
+        if not self.batch_results:
+            QMessageBox.information(self, "提示", "暂无可导出的批量分析结果。")
+            return
+
+        default_name = f"batch_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        default_path = output_dir() / default_name
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出批量分析结果 Excel",
+            str(default_path),
+            "Excel Files (*.xlsx)"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            output_path = self.exporter.export_batch_results_to_excel(
+                self.batch_results,
+                Path(file_path),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"导出 Excel 时发生错误：\n{exc}")
+            return
+
+        QMessageBox.information(self, "导出成功", f"批量分析结果已导出：\n{output_path}")
+
+    def export_csv(self) -> None:
+        if not self.batch_results:
+            QMessageBox.information(self, "提示", "暂无可导出的批量分析结果。")
+            return
+
+        default_name = f"batch_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        default_path = output_dir() / default_name
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出批量分析结果 CSV",
+            str(default_path),
+            "CSV Files (*.csv)"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            output_path = self.exporter.export_batch_results_to_csv(
+                self.batch_results,
+                Path(file_path),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"导出 CSV 时发生错误：\n{exc}")
+            return
+
+        QMessageBox.information(self, "导出成功", f"批量分析结果已导出：\n{output_path}")
 
     @staticmethod
     def _format_float(value, digits: int) -> str:

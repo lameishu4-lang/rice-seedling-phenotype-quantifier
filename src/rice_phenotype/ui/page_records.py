@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 
+from datetime import datetime
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget,
@@ -14,9 +17,12 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QInputDialog,
     QHeaderView,
+    QFileDialog,
 )
 
 from rice_phenotype.storage.database import RecordRepository
+from rice_phenotype.export.excel_exporter import ResultExporter
+from rice_phenotype.utils.paths import output_dir
 
 
 class RecordsPage(QWidget):
@@ -24,6 +30,7 @@ class RecordsPage(QWidget):
         super().__init__()
 
         self.repository = RecordRepository()
+        self.exporter = ResultExporter()
         self.records: list[dict] = []
 
         self._build_ui()
@@ -38,7 +45,7 @@ class RecordsPage(QWidget):
         title.setObjectName("PageTitle")
         layout.addWidget(title)
 
-        desc = QLabel("本页用于查看、查询、备注、删除和管理历史分析记录。")
+        desc = QLabel("本页用于查看、查询、备注、删除、导出和管理历史分析记录。")
         desc.setObjectName("PageDesc")
         desc.setWordWrap(True)
         layout.addWidget(desc)
@@ -69,6 +76,14 @@ class RecordsPage(QWidget):
         self.btn_delete.setObjectName("SecondaryButton")
         self.btn_delete.clicked.connect(self.delete_selected_record)
 
+        self.btn_export_excel = QPushButton("导出 Excel")
+        self.btn_export_excel.setObjectName("SecondaryButton")
+        self.btn_export_excel.clicked.connect(self.export_excel)
+
+        self.btn_export_csv = QPushButton("导出 CSV")
+        self.btn_export_csv.setObjectName("SecondaryButton")
+        self.btn_export_csv.clicked.connect(self.export_csv)
+
         toolbar_layout.addWidget(QLabel("样本查询："))
         toolbar_layout.addWidget(self.keyword_input)
         toolbar_layout.addWidget(self.btn_search)
@@ -76,6 +91,8 @@ class RecordsPage(QWidget):
         toolbar_layout.addStretch()
         toolbar_layout.addWidget(self.btn_note)
         toolbar_layout.addWidget(self.btn_delete)
+        toolbar_layout.addWidget(self.btn_export_excel)
+        toolbar_layout.addWidget(self.btn_export_csv)
 
         layout.addWidget(toolbar_card)
 
@@ -154,6 +171,64 @@ class RecordsPage(QWidget):
                 self.table.setItem(row_index, col_index, item)
 
         self.detail_label.setText(f"当前共显示 {len(records)} 条记录。")
+
+    def export_excel(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "提示", "暂无可导出的历史记录。")
+            return
+
+        default_name = f"history_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        default_path = output_dir() / default_name
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出历史记录 Excel",
+            str(default_path),
+            "Excel Files (*.xlsx)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            output_path = self.exporter.export_records_to_excel(
+                self.records,
+                Path(file_path),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"导出 Excel 时发生错误：\n{exc}")
+            return
+
+        QMessageBox.information(self, "导出成功", f"历史记录已导出：\n{output_path}")
+
+    def export_csv(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "提示", "暂无可导出的历史记录。")
+            return
+
+        default_name = f"history_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        default_path = output_dir() / default_name
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出历史记录 CSV",
+            str(default_path),
+            "CSV Files (*.csv)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            output_path = self.exporter.export_records_to_csv(
+                self.records,
+                Path(file_path),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"导出 CSV 时发生错误：\n{exc}")
+            return
+
+        QMessageBox.information(self, "导出成功", f"历史记录已导出：\n{output_path}")
 
     def get_selected_record_id(self) -> int | None:
         selected_rows = self.table.selectionModel().selectedRows()
