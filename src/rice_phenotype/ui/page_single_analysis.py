@@ -30,6 +30,7 @@ from rice_phenotype.core.segmentation import (
 )
 from rice_phenotype.core.calibration import ScaleCalibrator
 from rice_phenotype.core.metrics import PhenotypeCalculator, PhenotypeMetrics
+from rice_phenotype.core.settings import SettingsManager
 from rice_phenotype.storage.database import RecordRepository
 from rice_phenotype.utils.image_qt import ndarray_to_pixmap
 from rice_phenotype.utils.paths import image_output_dir, output_dir
@@ -55,9 +56,11 @@ class SingleAnalysisPage(QWidget):
         self.segmenter = SeedlingSegmenter()
         self.calibrator = ScaleCalibrator()
         self.calculator = PhenotypeCalculator()
+        self.settings_manager = SettingsManager()
         self.repository = RecordRepository()
 
         self._build_ui()
+        self._load_default_scale()
         self._reset_to_initial_state()
 
     def _build_ui(self) -> None:
@@ -128,7 +131,7 @@ class SingleAnalysisPage(QWidget):
         self.scale_spin.setFixedWidth(180)
         scale_layout.addWidget(self.scale_spin)
 
-        scale_note = QLabel("说明：当前采用手动比例尺，结果用于二维图像辅助量化。")
+        scale_note = QLabel("说明：默认比例尺从“参数设置”页读取，也可在本页临时修改。")
         scale_note.setStyleSheet("font-size: 13px; color: #4B5563;")
         scale_layout.addWidget(scale_note)
         scale_layout.addStretch()
@@ -195,6 +198,30 @@ class SingleAnalysisPage(QWidget):
             "card": card,
             "label": image_label,
         }
+
+    def _load_default_scale(self) -> None:
+        settings = self.settings_manager.load()
+        self.scale_spin.setValue(float(settings.default_cm_per_pixel))
+
+    def _load_segmentation_config(self) -> SegmentationConfig:
+        settings = self.settings_manager.load()
+
+        return SegmentationConfig(
+            hsv_lower=(
+                int(settings.hsv_h_min),
+                int(settings.hsv_s_min),
+                int(settings.hsv_v_min),
+            ),
+            hsv_upper=(
+                int(settings.hsv_h_max),
+                int(settings.hsv_s_max),
+                int(settings.hsv_v_max),
+            ),
+            exg_threshold=int(settings.exg_threshold),
+            min_area=int(settings.min_area),
+            kernel_size=int(settings.kernel_size),
+            method=settings.segmentation_method,
+        )
 
     def _reset_to_initial_state(self) -> None:
         self.current_image_path = None
@@ -270,6 +297,8 @@ class SingleAnalysisPage(QWidget):
         if not file_path:
             return
 
+        self._load_default_scale()
+
         path = Path(file_path)
 
         image_bgr = cv2.imdecode(
@@ -302,6 +331,7 @@ class SingleAnalysisPage(QWidget):
             f"已导入图像：{path.name}\n"
             f"图像尺寸：{width} × {height} px\n"
             f"文件路径：{path}\n\n"
+            f"当前比例尺：{float(self.scale_spin.value()):.5f} cm/pixel\n\n"
             "下一步：点击“执行分割”生成秧苗区域掩膜。"
         )
 
@@ -310,14 +340,7 @@ class SingleAnalysisPage(QWidget):
             QMessageBox.information(self, "提示", "请先导入图像。")
             return
 
-        config = SegmentationConfig(
-            hsv_lower=(35, 40, 40),
-            hsv_upper=(85, 255, 255),
-            exg_threshold=30,
-            min_area=300,
-            kernel_size=5,
-            method="HSV",
-        )
+        config = self._load_segmentation_config()
 
         try:
             result = self.segmenter.segment(self.current_image_rgb, config)
@@ -341,7 +364,9 @@ class SingleAnalysisPage(QWidget):
                 f"分割方法：{config.method}\n"
                 f"HSV 下限：{config.hsv_lower}\n"
                 f"HSV 上限：{config.hsv_upper}\n"
-                f"最小连通域面积：{config.min_area} px\n\n"
+                f"ExG 阈值：{config.exg_threshold}\n"
+                f"最小连通域面积：{config.min_area} px\n"
+                f"形态学核大小：{config.kernel_size}\n\n"
                 f"图像有效面积：{result.valid_area_px} px\n"
                 f"秧苗掩膜面积：{result.plant_area_px} px\n"
                 f"外接矩形：x={x}, y={y}, w={w}, h={h}\n\n"
@@ -355,7 +380,7 @@ class SingleAnalysisPage(QWidget):
             self.metrics_label.setText(
                 "分割未检测到有效区域。\n\n"
                 f"提示信息：{result.message}\n\n"
-                "建议：更换图像、调整拍摄背景，或后续在参数设置页中调整 HSV / ExG 阈值。"
+                "建议：更换图像，或在“参数设置”页调整 HSV / ExG / 最小连通域面积等参数。"
             )
 
     def calculate_metrics(self) -> None:
@@ -570,6 +595,7 @@ class SingleAnalysisPage(QWidget):
         doc.add_paragraph(f"HSV 上限：{config.hsv_upper}")
         doc.add_paragraph(f"ExG 阈值：{config.exg_threshold}")
         doc.add_paragraph(f"最小连通域面积：{config.min_area} px")
+        doc.add_paragraph(f"形态学核大小：{config.kernel_size}")
 
         doc.add_heading("二、图像结果", level=1)
 
@@ -626,9 +652,12 @@ class SingleAnalysisPage(QWidget):
         metrics: PhenotypeMetrics,
         cm_per_pixel: float,
     ) -> str:
+        config = self.current_config
+
         return (
             "表型指标计算完成。\n\n"
-            f"当前比例尺：{cm_per_pixel:.5f} cm/pixel\n\n"
+            f"当前比例尺：{cm_per_pixel:.5f} cm/pixel\n"
+            f"分割方法：{config.method if config else '未知'}\n\n"
             "【形态指标】\n"
             f"株高估算：{metrics.plant_height_cm:.2f} cm "
             f"({metrics.plant_height_px:.0f} px)\n"
