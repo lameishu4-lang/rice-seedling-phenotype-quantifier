@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from rice_phenotype.storage.database import RecordRepository
 from rice_phenotype.export.excel_exporter import ResultExporter
+from rice_phenotype.ui.dialogs.record_review_dialog import RecordReviewDialog
 from rice_phenotype.utils.paths import output_dir
 
 
@@ -46,7 +47,7 @@ class RecordsPage(QWidget):
         layout.addWidget(title)
 
         desc = QLabel(
-            "本页用于查看、查询、备注、删除、导出和管理历史分析记录。"
+            "本页用于查看、查询、复核、备注、删除、导出和管理历史分析记录。"
             "表格序号为当前查询结果的连续显示序号，数据库内部记录ID仅用于数据追踪。"
         )
         desc.setObjectName("PageDesc")
@@ -71,6 +72,11 @@ class RecordsPage(QWidget):
         self.btn_reset.setObjectName("SecondaryButton")
         self.btn_reset.clicked.connect(self.reset_search)
 
+        self.btn_review = QPushButton("查看记录详情")
+        self.btn_review.setObjectName("SecondaryButton")
+        self.btn_review.setEnabled(False)
+        self.btn_review.clicked.connect(self.review_selected_record)
+
         self.btn_note = QPushButton("编辑备注")
         self.btn_note.setObjectName("SecondaryButton")
         self.btn_note.clicked.connect(self.edit_note)
@@ -92,6 +98,7 @@ class RecordsPage(QWidget):
         toolbar_layout.addWidget(self.btn_search)
         toolbar_layout.addWidget(self.btn_reset)
         toolbar_layout.addStretch()
+        toolbar_layout.addWidget(self.btn_review)
         toolbar_layout.addWidget(self.btn_note)
         toolbar_layout.addWidget(self.btn_delete)
         toolbar_layout.addWidget(self.btn_export_excel)
@@ -144,6 +151,8 @@ class RecordsPage(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.itemSelectionChanged.connect(self.update_detail)
+        self.table.itemSelectionChanged.connect(self._update_action_buttons)
 
         table_layout.addWidget(self.table)
 
@@ -152,8 +161,6 @@ class RecordsPage(QWidget):
         self.detail_label.setStyleSheet("font-size: 13px; color: #4B5563;")
         table_layout.addWidget(self.detail_label)
 
-        self.table.itemSelectionChanged.connect(self.update_detail)
-
         layout.addWidget(table_card, stretch=1)
 
     def refresh_records(self) -> None:
@@ -161,6 +168,7 @@ class RecordsPage(QWidget):
         self.records = self.repository.query_records(keyword=keyword)
         self._fill_table(self.records)
         self._update_summary(self.records)
+        self._update_action_buttons()
 
     def reset_search(self) -> None:
         self.keyword_input.clear()
@@ -232,63 +240,9 @@ class RecordsPage(QWidget):
 
         self.summary_label.setText(text)
 
-    def export_excel(self) -> None:
-        if not self.records:
-            QMessageBox.information(self, "提示", "暂无可导出的历史记录。")
-            return
-
-        default_name = f"history_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        default_path = output_dir() / default_name
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "导出历史记录 Excel",
-            str(default_path),
-            "Excel Files (*.xlsx)",
-        )
-
-        if not file_path:
-            return
-
-        try:
-            output_path = self.exporter.export_records_to_excel(
-                self.records,
-                Path(file_path),
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "导出失败", f"导出 Excel 时发生错误：\n{exc}")
-            return
-
-        QMessageBox.information(self, "导出成功", f"历史记录已导出：\n{output_path}")
-
-    def export_csv(self) -> None:
-        if not self.records:
-            QMessageBox.information(self, "提示", "暂无可导出的历史记录。")
-            return
-
-        default_name = f"history_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        default_path = output_dir() / default_name
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "导出历史记录 CSV",
-            str(default_path),
-            "CSV Files (*.csv)",
-        )
-
-        if not file_path:
-            return
-
-        try:
-            output_path = self.exporter.export_records_to_csv(
-                self.records,
-                Path(file_path),
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "导出失败", f"导出 CSV 时发生错误：\n{exc}")
-            return
-
-        QMessageBox.information(self, "导出成功", f"历史记录已导出：\n{output_path}")
+    def _update_action_buttons(self) -> None:
+        has_selection = bool(self.table.selectionModel().selectedRows())
+        self.btn_review.setEnabled(has_selection)
 
     def get_selected_record_id(self) -> int | None:
         selected_rows = self.table.selectionModel().selectedRows()
@@ -319,6 +273,29 @@ class RecordsPage(QWidget):
             return None
 
         return self.repository.get_record(record_id)
+
+    def get_selected_display_index(self) -> int | None:
+        selected_rows = self.table.selectionModel().selectedRows()
+
+        if not selected_rows:
+            return None
+
+        return selected_rows[0].row() + 1
+
+    def review_selected_record(self) -> None:
+        record = self.get_selected_record()
+        display_index = self.get_selected_display_index()
+
+        if record is None or display_index is None:
+            QMessageBox.information(self, "提示", "请先选择一条记录。")
+            return
+
+        dialog = RecordReviewDialog(
+            display_index=display_index,
+            record=record,
+            parent=self,
+        )
+        dialog.exec()
 
     def update_detail(self) -> None:
         selected_rows = self.table.selectionModel().selectedRows()
@@ -416,6 +393,64 @@ class RecordsPage(QWidget):
             self.refresh_records()
         else:
             QMessageBox.warning(self, "删除失败", "记录删除失败。")
+
+    def export_excel(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "提示", "暂无可导出的历史记录。")
+            return
+
+        default_name = f"history_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        default_path = output_dir() / default_name
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出历史记录 Excel",
+            str(default_path),
+            "Excel Files (*.xlsx)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            output_path = self.exporter.export_records_to_excel(
+                self.records,
+                Path(file_path),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"导出 Excel 时发生错误：\n{exc}")
+            return
+
+        QMessageBox.information(self, "导出成功", f"历史记录已导出：\n{output_path}")
+
+    def export_csv(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "提示", "暂无可导出的历史记录。")
+            return
+
+        default_name = f"history_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        default_path = output_dir() / default_name
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出历史记录 CSV",
+            str(default_path),
+            "CSV Files (*.csv)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            output_path = self.exporter.export_records_to_csv(
+                self.records,
+                Path(file_path),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"导出 CSV 时发生错误：\n{exc}")
+            return
+
+        QMessageBox.information(self, "导出成功", f"历史记录已导出：\n{output_path}")
 
     @staticmethod
     def _collect_float_values(records: list[dict], key: str) -> list[float]:

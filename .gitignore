@@ -3,34 +3,62 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual environment
+# Virtual environments
 .venv/
 venv/
 env/
+ENV/
 
 # IDE
 .idea/
 .vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
 
 # Build files
 build/
 dist/
 *.spec
 
+# PyInstaller temporary files
+*.manifest
+*.log
+
 # Runtime data
 data/
 outputs/
+
+# Local database files
 *.db
 *.sqlite
 *.sqlite3
 
-# Logs
-*.log
-
-# OS files
-.DS_Store
-Thumbs.db
+# Exported analysis files
+*.xlsx
+*.xls
+*.csv
+*.docx
 
 # Temporary files
 *.tmp
-*.bak
+*.temp
+~$*
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Packaging
+*.egg-info/
+.eggs/
+
+# Local environment files
+.env
+.env.*
