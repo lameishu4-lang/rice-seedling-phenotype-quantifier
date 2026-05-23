@@ -26,6 +26,7 @@ from rice_phenotype import __version__
 from rice_phenotype.core.batch import BatchAnalyzer, BatchItemResult
 from rice_phenotype.core.segmentation import SegmentationConfig
 from rice_phenotype.core.settings import SettingsManager
+from rice_phenotype.core.statistics import BatchStatisticsCalculator, BatchSummary, MetricStats
 from rice_phenotype.export.excel_exporter import ResultExporter
 from rice_phenotype.storage.database import RecordRepository
 from rice_phenotype.utils.paths import output_dir, image_output_dir
@@ -37,6 +38,7 @@ class BatchAnalysisPage(QWidget):
 
         self.current_folder: Path | None = None
         self.batch_results: list[BatchItemResult] = []
+        self.current_summary: BatchSummary | None = None
 
         self.last_batch_config: SegmentationConfig | None = None
         self.last_cm_per_pixel: float | None = None
@@ -46,6 +48,7 @@ class BatchAnalysisPage(QWidget):
         self.exporter = ResultExporter()
         self.settings_manager = SettingsManager()
         self.repository = RecordRepository()
+        self.summary_calculator = BatchStatisticsCalculator()
 
         self._build_ui()
         self._load_default_scale()
@@ -61,7 +64,7 @@ class BatchAnalysisPage(QWidget):
 
         desc = QLabel(
             "选择图像文件夹后，软件将按照“参数设置”中的分割参数逐张执行绿色区域分割、"
-            "比例尺换算和二维表型指标计算。批量分析完成后，可将成功记录保存至历史记录。"
+            "比例尺换算和二维表型指标计算。批量分析完成后，可查看统计摘要、保存成功记录或导出结果。"
         )
         desc.setObjectName("PageDesc")
         desc.setWordWrap(True)
@@ -171,6 +174,23 @@ class BatchAnalysisPage(QWidget):
 
         layout.addWidget(progress_card)
 
+        summary_card = QFrame()
+        summary_card.setObjectName("Card")
+        summary_layout = QVBoxLayout(summary_card)
+        summary_layout.setContentsMargins(18, 14, 18, 14)
+        summary_layout.setSpacing(8)
+
+        summary_title = QLabel("批量统计摘要")
+        summary_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #111827;")
+        summary_layout.addWidget(summary_title)
+
+        self.summary_label = QLabel("尚未进行批量分析。")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet("font-size: 13px; color: #374151; line-height: 1.6;")
+        summary_layout.addWidget(self.summary_label)
+
+        layout.addWidget(summary_card)
+
         table_card = QFrame()
         table_card.setObjectName("Card")
         table_layout = QVBoxLayout(table_card)
@@ -270,12 +290,14 @@ class BatchAnalysisPage(QWidget):
         self.btn_start.setEnabled(True)
 
         self.batch_results = []
+        self.current_summary = None
         self.table.setRowCount(0)
         self.progress_bar.setValue(0)
         self.batch_saved = False
         self.btn_save_success.setEnabled(False)
         self.btn_export_excel.setEnabled(False)
         self.btn_export_csv.setEnabled(False)
+        self.summary_label.setText("尚未进行批量分析。")
 
         try:
             image_paths = self.analyzer.list_images(self.current_folder)
@@ -332,7 +354,9 @@ class BatchAnalysisPage(QWidget):
 
         self.progress_bar.setValue(0)
         self.batch_results = []
+        self.current_summary = None
         self.table.setRowCount(0)
+        self.summary_label.setText("正在统计批量分析结果...")
 
         total = len(image_paths)
 
@@ -355,8 +379,11 @@ class BatchAnalysisPage(QWidget):
 
             self.repaint()
 
-        success_count = sum(1 for item in self.batch_results if item.success)
-        fail_count = len(self.batch_results) - success_count
+        self.current_summary = self.summary_calculator.calculate(self.batch_results)
+        self.summary_label.setText(self._format_summary(self.current_summary))
+
+        success_count = self.current_summary.success_count
+        fail_count = self.current_summary.failed_count
 
         self.status_label.setText(
             f"批量分析完成：成功 {success_count} 张，失败 {fail_count} 张。"
@@ -568,6 +595,7 @@ class BatchAnalysisPage(QWidget):
 
     def clear_results(self) -> None:
         self.batch_results = []
+        self.current_summary = None
         self.table.setRowCount(0)
         self.progress_bar.setValue(0)
 
@@ -576,10 +604,39 @@ class BatchAnalysisPage(QWidget):
         self.batch_saved = False
 
         self.status_label.setText("已清空批量分析结果。")
+        self.summary_label.setText("尚未进行批量分析。")
         self.btn_save_success.setEnabled(False)
         self.btn_export_excel.setEnabled(False)
         self.btn_export_csv.setEnabled(False)
         self._update_config_label()
+
+    def _format_summary(self, summary: BatchSummary) -> str:
+        return (
+            f"样本总数：{summary.total_count}；"
+            f"成功：{summary.success_count}；"
+            f"失败：{summary.failed_count}；"
+            f"成功率：{summary.success_rate * 100:.2f}%\n\n"
+            "【株高】"
+            f"均值 {self._format_metric(summary.plant_height_cm.mean_value, 2)} cm，"
+            f"最小 {self._format_metric(summary.plant_height_cm.min_value, 2)} cm，"
+            f"最大 {self._format_metric(summary.plant_height_cm.max_value, 2)} cm\n"
+            "【冠幅】"
+            f"均值 {self._format_metric(summary.canopy_width_cm.mean_value, 2)} cm，"
+            f"最小 {self._format_metric(summary.canopy_width_cm.min_value, 2)} cm，"
+            f"最大 {self._format_metric(summary.canopy_width_cm.max_value, 2)} cm\n"
+            "【投影面积】"
+            f"均值 {self._format_metric(summary.projected_area_cm2.mean_value, 2)} cm²，"
+            f"最小 {self._format_metric(summary.projected_area_cm2.min_value, 2)} cm²，"
+            f"最大 {self._format_metric(summary.projected_area_cm2.max_value, 2)} cm²\n"
+            "【绿色覆盖率】"
+            f"均值 {self._format_percent_value(summary.green_coverage.mean_value)}，"
+            f"最小 {self._format_percent_value(summary.green_coverage.min_value)}，"
+            f"最大 {self._format_percent_value(summary.green_coverage.max_value)}\n"
+            "【长势评分】"
+            f"均值 {self._format_metric(summary.growth_score.mean_value, 2)}，"
+            f"最小 {self._format_metric(summary.growth_score.min_value, 2)}，"
+            f"最大 {self._format_metric(summary.growth_score.max_value, 2)}"
+        )
 
     @staticmethod
     def _save_mask_image(path: Path, mask: np.ndarray) -> None:
@@ -600,6 +657,26 @@ class BatchAnalysisPage(QWidget):
             raise RuntimeError("图像编码失败。")
 
         encoded.tofile(str(path))
+
+    @staticmethod
+    def _format_metric(value, digits: int) -> str:
+        if value is None:
+            return "-"
+
+        try:
+            return f"{float(value):.{digits}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _format_percent_value(value) -> str:
+        if value is None:
+            return "-"
+
+        try:
+            return f"{float(value) * 100:.2f}%"
+        except (TypeError, ValueError):
+            return str(value)
 
     @staticmethod
     def _format_float(value, digits: int) -> str:

@@ -60,8 +60,8 @@ class RecordsPage(QWidget):
         toolbar_layout.setSpacing(12)
 
         self.keyword_input = QLineEdit()
-        self.keyword_input.setPlaceholderText("输入样本名称关键词")
-        self.keyword_input.setFixedWidth(260)
+        self.keyword_input.setPlaceholderText("输入样本名称或备注关键词")
+        self.keyword_input.setFixedWidth(280)
 
         self.btn_search = QPushButton("查询")
         self.btn_search.setObjectName("PrimaryButton")
@@ -87,7 +87,7 @@ class RecordsPage(QWidget):
         self.btn_export_csv.setObjectName("SecondaryButton")
         self.btn_export_csv.clicked.connect(self.export_csv)
 
-        toolbar_layout.addWidget(QLabel("样本查询："))
+        toolbar_layout.addWidget(QLabel("记录查询："))
         toolbar_layout.addWidget(self.keyword_input)
         toolbar_layout.addWidget(self.btn_search)
         toolbar_layout.addWidget(self.btn_reset)
@@ -98,6 +98,23 @@ class RecordsPage(QWidget):
         toolbar_layout.addWidget(self.btn_export_csv)
 
         layout.addWidget(toolbar_card)
+
+        summary_card = QFrame()
+        summary_card.setObjectName("Card")
+        summary_layout = QVBoxLayout(summary_card)
+        summary_layout.setContentsMargins(18, 14, 18, 14)
+        summary_layout.setSpacing(8)
+
+        summary_title = QLabel("历史记录统计摘要")
+        summary_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #111827;")
+        summary_layout.addWidget(summary_title)
+
+        self.summary_label = QLabel("暂无历史记录统计信息。")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet("font-size: 13px; color: #374151; line-height: 1.6;")
+        summary_layout.addWidget(self.summary_label)
+
+        layout.addWidget(summary_card)
 
         table_card = QFrame()
         table_card.setObjectName("Card")
@@ -143,6 +160,7 @@ class RecordsPage(QWidget):
         keyword = self.keyword_input.text().strip()
         self.records = self.repository.query_records(keyword=keyword)
         self._fill_table(self.records)
+        self._update_summary(self.records)
 
     def reset_search(self) -> None:
         self.keyword_input.clear()
@@ -181,6 +199,38 @@ class RecordsPage(QWidget):
             f"当前共显示 {len(records)} 条记录。"
             "表格第一列为连续显示序号，数据库内部记录ID不作为显示序号。"
         )
+
+    def _update_summary(self, records: list[dict]) -> None:
+        if not records:
+            self.summary_label.setText("当前查询结果为空，暂无统计摘要。")
+            return
+
+        height_values = self._collect_float_values(records, "plant_height_cm")
+        width_values = self._collect_float_values(records, "canopy_width_cm")
+        area_values = self._collect_float_values(records, "projected_area_cm2")
+        coverage_values = self._collect_float_values(records, "green_coverage")
+        score_values = self._collect_float_values(records, "growth_score")
+
+        text = (
+            f"当前显示记录数：{len(records)} 条\n\n"
+            f"【株高】平均 {self._format_average(height_values, 2)} cm，"
+            f"最小 {self._format_min(height_values, 2)} cm，"
+            f"最大 {self._format_max(height_values, 2)} cm\n"
+            f"【冠幅】平均 {self._format_average(width_values, 2)} cm，"
+            f"最小 {self._format_min(width_values, 2)} cm，"
+            f"最大 {self._format_max(width_values, 2)} cm\n"
+            f"【投影面积】平均 {self._format_average(area_values, 2)} cm²，"
+            f"最小 {self._format_min(area_values, 2)} cm²，"
+            f"最大 {self._format_max(area_values, 2)} cm²\n"
+            f"【绿色覆盖率】平均 {self._format_average_percent(coverage_values)}，"
+            f"最小 {self._format_min_percent(coverage_values)}，"
+            f"最大 {self._format_max_percent(coverage_values)}\n"
+            f"【长势评分】平均 {self._format_average(score_values, 2)}，"
+            f"最小 {self._format_min(score_values, 2)}，"
+            f"最大 {self._format_max(score_values, 2)}"
+        )
+
+        self.summary_label.setText(text)
 
     def export_excel(self) -> None:
         if not self.records:
@@ -366,6 +416,65 @@ class RecordsPage(QWidget):
             self.refresh_records()
         else:
             QMessageBox.warning(self, "删除失败", "记录删除失败。")
+
+    @staticmethod
+    def _collect_float_values(records: list[dict], key: str) -> list[float]:
+        values: list[float] = []
+
+        for record in records:
+            value = record.get(key)
+
+            if value is None:
+                continue
+
+            try:
+                values.append(float(value))
+            except (TypeError, ValueError):
+                continue
+
+        return values
+
+    @staticmethod
+    def _format_average(values: list[float], digits: int) -> str:
+        if not values:
+            return "-"
+
+        return f"{sum(values) / len(values):.{digits}f}"
+
+    @staticmethod
+    def _format_min(values: list[float], digits: int) -> str:
+        if not values:
+            return "-"
+
+        return f"{min(values):.{digits}f}"
+
+    @staticmethod
+    def _format_max(values: list[float], digits: int) -> str:
+        if not values:
+            return "-"
+
+        return f"{max(values):.{digits}f}"
+
+    @staticmethod
+    def _format_average_percent(values: list[float]) -> str:
+        if not values:
+            return "-"
+
+        return f"{sum(values) / len(values) * 100:.2f}%"
+
+    @staticmethod
+    def _format_min_percent(values: list[float]) -> str:
+        if not values:
+            return "-"
+
+        return f"{min(values) * 100:.2f}%"
+
+    @staticmethod
+    def _format_max_percent(values: list[float]) -> str:
+        if not values:
+            return "-"
+
+        return f"{max(values) * 100:.2f}%"
 
     @staticmethod
     def _format_float(value, digits: int) -> str:
