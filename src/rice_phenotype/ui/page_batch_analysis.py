@@ -31,6 +31,7 @@ from rice_phenotype.core.statistics import BatchStatisticsCalculator, BatchSumma
 from rice_phenotype.export.excel_exporter import ResultExporter
 from rice_phenotype.storage.database import RecordRepository
 from rice_phenotype.ui.widgets.charts import BarChartWidget, ScoreLevelWidget
+from rice_phenotype.ui.dialogs.sample_review_dialog import SampleReviewDialog
 from rice_phenotype.utils.paths import output_dir, image_output_dir
 
 
@@ -82,7 +83,7 @@ class BatchAnalysisPage(QWidget):
         desc = QLabel(
             "选择图像文件夹后，软件将按照“参数设置”中的分割参数逐张执行绿色区域分割、"
             "比例尺换算和二维表型指标计算。批量分析完成后，可查看统计摘要、解释提示、"
-            "可视化结果、保存成功记录或导出结果。"
+            "可视化结果、保存成功记录、复核单个样本或导出结果。"
         )
         desc.setObjectName("PageDesc")
         desc.setWordWrap(True)
@@ -124,7 +125,6 @@ class BatchAnalysisPage(QWidget):
         self.scale_spin.setValue(0.05000)
         self.scale_spin.setSuffix(" cm/pixel")
         self.scale_spin.setFixedWidth(180)
-
         setting_layout.addWidget(self.scale_spin)
 
         self.btn_reload_settings = QPushButton("重新读取参数")
@@ -140,6 +140,11 @@ class BatchAnalysisPage(QWidget):
         self.btn_save_success.setObjectName("SecondaryButton")
         self.btn_save_success.setEnabled(False)
         self.btn_save_success.clicked.connect(self.save_success_records)
+
+        self.btn_review_sample = QPushButton("查看选中样本")
+        self.btn_review_sample.setObjectName("SecondaryButton")
+        self.btn_review_sample.setEnabled(False)
+        self.btn_review_sample.clicked.connect(self.review_selected_sample)
 
         self.btn_clear = QPushButton("清空结果")
         self.btn_clear.setObjectName("SecondaryButton")
@@ -158,6 +163,7 @@ class BatchAnalysisPage(QWidget):
         setting_layout.addWidget(self.btn_reload_settings)
         setting_layout.addWidget(self.btn_start)
         setting_layout.addWidget(self.btn_save_success)
+        setting_layout.addWidget(self.btn_review_sample)
         setting_layout.addWidget(self.btn_clear)
         setting_layout.addWidget(self.btn_export_excel)
         setting_layout.addWidget(self.btn_export_csv)
@@ -225,7 +231,8 @@ class BatchAnalysisPage(QWidget):
         insight_layout.addWidget(self.insight_label)
 
         insight_note = QLabel(
-            "说明：解释提示基于软件内部评分和二维图像指标生成，仅用于辅助查看和复核，不作为农学诊断或生产决策依据。"
+            "说明：解释提示基于软件内部评分和二维图像指标生成，仅用于辅助查看和复核，"
+            "不作为农学诊断或生产决策依据。"
         )
         insight_note.setWordWrap(True)
         insight_note.setStyleSheet("font-size: 12px; color: #6B7280;")
@@ -301,6 +308,7 @@ class BatchAnalysisPage(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.itemSelectionChanged.connect(self._update_review_button_state)
 
         table_layout.addWidget(self.table)
 
@@ -376,9 +384,12 @@ class BatchAnalysisPage(QWidget):
         self.table.setRowCount(0)
         self.progress_bar.setValue(0)
         self.batch_saved = False
+
         self.btn_save_success.setEnabled(False)
+        self.btn_review_sample.setEnabled(False)
         self.btn_export_excel.setEnabled(False)
         self.btn_export_csv.setEnabled(False)
+
         self.summary_label.setText("尚未进行批量分析。")
         self.insight_label.setText("尚未生成批量结果解释提示。")
         self._reset_visualization()
@@ -433,6 +444,7 @@ class BatchAnalysisPage(QWidget):
 
         self.btn_start.setEnabled(False)
         self.btn_save_success.setEnabled(False)
+        self.btn_review_sample.setEnabled(False)
         self.btn_export_excel.setEnabled(False)
         self.btn_export_csv.setEnabled(False)
 
@@ -481,6 +493,11 @@ class BatchAnalysisPage(QWidget):
         self.btn_save_success.setEnabled(success_count > 0)
         self.btn_export_excel.setEnabled(len(self.batch_results) > 0)
         self.btn_export_csv.setEnabled(len(self.batch_results) > 0)
+
+        if self.batch_results:
+            self.table.selectRow(0)
+
+        self._update_review_button_state()
 
     def _append_result_row(
         self,
@@ -547,6 +564,47 @@ class BatchAnalysisPage(QWidget):
 
         self.score_level_widget.set_scores(scores)
 
+    def _update_review_button_state(self) -> None:
+        if not self.batch_results:
+            self.btn_review_sample.setEnabled(False)
+            return
+
+        selected_rows = self.table.selectionModel().selectedRows()
+
+        if not selected_rows:
+            self.btn_review_sample.setEnabled(False)
+            return
+
+        row_index = selected_rows[0].row()
+        self.btn_review_sample.setEnabled(0 <= row_index < len(self.batch_results))
+
+    def review_selected_sample(self) -> None:
+        if not self.batch_results:
+            QMessageBox.information(self, "提示", "暂无可复核的批量分析结果。")
+            return
+
+        selected_rows = self.table.selectionModel().selectedRows()
+
+        if not selected_rows:
+            QMessageBox.information(self, "提示", "请先在结果明细表中选择一条样本记录。")
+            return
+
+        row_index = selected_rows[0].row()
+
+        if row_index < 0 or row_index >= len(self.batch_results):
+            QMessageBox.warning(self, "提示", "选中的样本序号无效。")
+            return
+
+        result = self.batch_results[row_index]
+
+        dialog = SampleReviewDialog(
+            sample_index=row_index + 1,
+            result=result,
+            cm_per_pixel=self.last_cm_per_pixel,
+            parent=self,
+        )
+        dialog.exec()
+
     def _format_insights(
         self,
         summary: BatchSummary,
@@ -573,8 +631,8 @@ class BatchAnalysisPage(QWidget):
         ]
 
         scores_sorted = sorted(scores, key=lambda item: item[2])
-        lowest_index, lowest_name, lowest_score = scores_sorted[0]
-        highest_index, highest_name, highest_score = scores_sorted[-1]
+        lowest_index, _, lowest_score = scores_sorted[0]
+        highest_index, _, highest_score = scores_sorted[-1]
 
         low_score_items = [
             item for item in scores
@@ -810,9 +868,12 @@ class BatchAnalysisPage(QWidget):
         self.status_label.setText("已清空批量分析结果。")
         self.summary_label.setText("尚未进行批量分析。")
         self.insight_label.setText("尚未生成批量结果解释提示。")
+
         self.btn_save_success.setEnabled(False)
+        self.btn_review_sample.setEnabled(False)
         self.btn_export_excel.setEnabled(False)
         self.btn_export_csv.setEnabled(False)
+
         self._reset_visualization()
         self._update_config_label()
 
