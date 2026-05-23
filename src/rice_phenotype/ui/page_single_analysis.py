@@ -155,6 +155,7 @@ class SingleAnalysisPage(QWidget):
         metrics_card.setObjectName("Card")
         metrics_layout = QVBoxLayout(metrics_card)
         metrics_layout.setContentsMargins(20, 16, 20, 16)
+        metrics_layout.setSpacing(12)
 
         metric_title = QLabel("分析信息与表型指标")
         metric_title.setStyleSheet("font-size: 17px; font-weight: 700; color: #111827;")
@@ -164,6 +165,25 @@ class SingleAnalysisPage(QWidget):
         self.metrics_label.setWordWrap(True)
         self.metrics_label.setStyleSheet("font-size: 14px; color: #374151; line-height: 1.6;")
         metrics_layout.addWidget(self.metrics_label)
+
+        insight_title = QLabel("单样本结果解释提示")
+        insight_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #111827;")
+        metrics_layout.addWidget(insight_title)
+
+        self.insight_label = QLabel("完成指标计算后，将在此处生成单样本结果解释提示。")
+        self.insight_label.setWordWrap(True)
+        self.insight_label.setStyleSheet(
+            "font-size: 13px; color: #374151; line-height: 1.6;"
+        )
+        metrics_layout.addWidget(self.insight_label)
+
+        insight_note = QLabel(
+            "说明：解释提示基于二维图像指标和软件内部评分生成，仅用于辅助查看和复核，"
+            "不作为农学诊断、病害判断、品种评价或生产决策依据。"
+        )
+        insight_note.setWordWrap(True)
+        insight_note.setStyleSheet("font-size: 12px; color: #6B7280;")
+        metrics_layout.addWidget(insight_note)
 
         root_layout.addWidget(metrics_card)
 
@@ -246,6 +266,7 @@ class SingleAnalysisPage(QWidget):
             "操作流程：导入图像 → 执行分割 → 计算指标 → 保存记录 / 导出报告。\n\n"
             "说明：保存记录和导出报告必须在表型指标计算完成后才能执行，且同一轮分析结果只能各执行一次。"
         )
+        self.insight_label.setText("完成指标计算后，将在此处生成单样本结果解释提示。")
 
     def _reset_after_import(self) -> None:
         self.current_segmentation = None
@@ -263,6 +284,8 @@ class SingleAnalysisPage(QWidget):
         self.btn_save.setEnabled(False)
         self.btn_report.setEnabled(False)
 
+        self.insight_label.setText("已导入图像。完成分割和指标计算后，将生成结果解释提示。")
+
     def _reset_after_segmentation(self) -> None:
         self.current_metrics = None
 
@@ -275,6 +298,8 @@ class SingleAnalysisPage(QWidget):
         self.btn_calculate.setEnabled(True)
         self.btn_save.setEnabled(False)
         self.btn_report.setEnabled(False)
+
+        self.insight_label.setText("分割已完成。完成指标计算后，将生成结果解释提示。")
 
     def _reset_after_metric_calculation(self) -> None:
         self.record_saved = False
@@ -382,6 +407,9 @@ class SingleAnalysisPage(QWidget):
                 f"提示信息：{result.message}\n\n"
                 "建议：更换图像，或在“参数设置”页调整 HSV / ExG / 最小连通域面积等参数。"
             )
+            self.insight_label.setText(
+                "当前图像未得到有效分割结果。建议优先检查图像质量、拍摄背景、光照条件和分割参数。"
+            )
 
     def calculate_metrics(self) -> None:
         if self.current_image_rgb is None:
@@ -410,6 +438,7 @@ class SingleAnalysisPage(QWidget):
         self.current_metrics = metrics
         self._reset_after_metric_calculation()
         self.metrics_label.setText(self._format_metrics(metrics, cm_per_pixel))
+        self.insight_label.setText(self._format_single_insights(metrics, cm_per_pixel))
 
     def save_record(self) -> None:
         if self.record_saved:
@@ -638,7 +667,10 @@ class SingleAnalysisPage(QWidget):
             cells[1].text = name
             cells[2].text = value
 
-        doc.add_heading("四、结果说明", level=1)
+        doc.add_heading("四、结果解释提示", level=1)
+        doc.add_paragraph(self._format_single_insights(metrics, cm_per_pixel))
+
+        doc.add_heading("五、结果说明", level=1)
         doc.add_paragraph(
             "本报告结果基于二维图像分割、像素统计和比例尺换算生成，仅用于样本记录、"
             "教学演示和科研辅助整理，不作为田间生产决策、农学诊断或病害判断的唯一依据。"
@@ -676,6 +708,66 @@ class SingleAnalysisPage(QWidget):
             "教学演示和科研辅助整理，不作为农学诊断或生产决策依据。\n\n"
             "下一步：可点击“保存记录”写入本地数据库，或点击“导出报告”生成单样本 Word 报告。"
         )
+
+    def _format_single_insights(
+        self,
+        metrics: PhenotypeMetrics,
+        cm_per_pixel: float,
+    ) -> str:
+        lines: list[str] = []
+
+        score = float(metrics.growth_score)
+        coverage = float(metrics.green_coverage)
+        fill_ratio = float(metrics.bbox_fill_ratio)
+
+        lines.append(
+            f"当前样本长势评分为 {score:.2f}，该评分为软件内部综合评分，适合用于同批次样本之间的相对比较。"
+        )
+
+        if score >= 80:
+            lines.append(
+                "该样本处于内部评分较高区间，可结合原始图像、掩膜图和叠加图进一步确认分割结果是否符合预期。"
+            )
+        elif score >= 60:
+            lines.append(
+                "该样本处于内部评分中等区间，建议结合实际拍摄条件和同批次样本进行对照查看。"
+            )
+        else:
+            lines.append(
+                "该样本处于内部评分偏低区间，建议优先复核图像质量、分割效果、比例尺设置和实际样本状态。"
+            )
+
+        lines.append(
+            f"绿色覆盖率为 {coverage * 100:.2f}%，可结合原图与掩膜图查看绿色区域提取是否覆盖主要秧苗区域。"
+        )
+
+        if coverage < 0.15:
+            lines.append(
+                "当前绿色覆盖率相对较低，可能与拍摄背景占比、秧苗区域占比、光照条件或阈值参数有关，建议结合叠加图复核。"
+            )
+        elif coverage > 0.70:
+            lines.append(
+                "当前绿色覆盖率相对较高，建议确认图像背景是否较少、掩膜是否覆盖了非秧苗绿色区域。"
+            )
+
+        lines.append(
+            f"外接矩形填充率为 {fill_ratio * 100:.2f}%，可用于辅助判断掩膜区域在外接矩形范围内的集中程度。"
+        )
+
+        if fill_ratio < 0.20:
+            lines.append(
+                "当前外接矩形填充率较低，可能说明掩膜区域较分散，建议查看是否存在背景干扰、遮挡或分割碎片。"
+            )
+
+        lines.append(
+            f"当前比例尺为 {cm_per_pixel:.5f} cm/pixel，株高、冠幅和投影面积结果均依赖该比例尺，正式记录前建议确认比例尺设置。"
+        )
+
+        lines.append(
+            "以上提示仅用于辅助查看和复核，不作为农学诊断、病害判断、品种评价或生产决策依据。"
+        )
+
+        return "\n".join(lines)
 
     def _show_ndarray_image(self, label: QLabel, image: np.ndarray) -> None:
         pixmap = ndarray_to_pixmap(image)

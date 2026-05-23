@@ -20,15 +20,17 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QMessageBox,
     QHeaderView,
+    QScrollArea,
 )
 
 from rice_phenotype import __version__
 from rice_phenotype.core.batch import BatchAnalyzer, BatchItemResult
 from rice_phenotype.core.segmentation import SegmentationConfig
 from rice_phenotype.core.settings import SettingsManager
-from rice_phenotype.core.statistics import BatchStatisticsCalculator, BatchSummary, MetricStats
+from rice_phenotype.core.statistics import BatchStatisticsCalculator, BatchSummary
 from rice_phenotype.export.excel_exporter import ResultExporter
 from rice_phenotype.storage.database import RecordRepository
+from rice_phenotype.ui.widgets.charts import BarChartWidget, ScoreLevelWidget
 from rice_phenotype.utils.paths import output_dir, image_output_dir
 
 
@@ -52,11 +54,26 @@ class BatchAnalysisPage(QWidget):
 
         self._build_ui()
         self._load_default_scale()
+        self._reset_visualization()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(36, 32, 36, 32)
         layout.setSpacing(18)
+
+        scroll_area.setWidget(content)
+        outer_layout.addWidget(scroll_area)
 
         title = QLabel("批量分析")
         title.setObjectName("PageTitle")
@@ -64,7 +81,8 @@ class BatchAnalysisPage(QWidget):
 
         desc = QLabel(
             "选择图像文件夹后，软件将按照“参数设置”中的分割参数逐张执行绿色区域分割、"
-            "比例尺换算和二维表型指标计算。批量分析完成后，可查看统计摘要、保存成功记录或导出结果。"
+            "比例尺换算和二维表型指标计算。批量分析完成后，可查看统计摘要、解释提示、"
+            "可视化结果、保存成功记录或导出结果。"
         )
         desc.setObjectName("PageDesc")
         desc.setWordWrap(True)
@@ -191,13 +209,76 @@ class BatchAnalysisPage(QWidget):
 
         layout.addWidget(summary_card)
 
+        insight_card = QFrame()
+        insight_card.setObjectName("Card")
+        insight_layout = QVBoxLayout(insight_card)
+        insight_layout.setContentsMargins(18, 14, 18, 14)
+        insight_layout.setSpacing(8)
+
+        insight_title = QLabel("批量结果解释提示")
+        insight_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #111827;")
+        insight_layout.addWidget(insight_title)
+
+        self.insight_label = QLabel("尚未生成批量结果解释提示。")
+        self.insight_label.setWordWrap(True)
+        self.insight_label.setStyleSheet("font-size: 13px; color: #374151; line-height: 1.6;")
+        insight_layout.addWidget(self.insight_label)
+
+        insight_note = QLabel(
+            "说明：解释提示基于软件内部评分和二维图像指标生成，仅用于辅助查看和复核，不作为农学诊断或生产决策依据。"
+        )
+        insight_note.setWordWrap(True)
+        insight_note.setStyleSheet("font-size: 12px; color: #6B7280;")
+        insight_layout.addWidget(insight_note)
+
+        layout.addWidget(insight_card)
+
+        visual_card = QFrame()
+        visual_card.setObjectName("Card")
+        visual_card.setMinimumHeight(330)
+        visual_layout = QVBoxLayout(visual_card)
+        visual_layout.setContentsMargins(18, 14, 18, 14)
+        visual_layout.setSpacing(10)
+
+        visual_title = QLabel("批量结果可视化")
+        visual_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #111827;")
+        visual_layout.addWidget(visual_title)
+
+        chart_layout = QHBoxLayout()
+        chart_layout.setSpacing(12)
+
+        self.score_chart = BarChartWidget("长势评分柱状图")
+        self.height_chart = BarChartWidget("株高估算柱状图")
+        self.score_level_widget = ScoreLevelWidget("评分等级统计")
+
+        chart_layout.addWidget(self.score_chart, stretch=1)
+        chart_layout.addWidget(self.height_chart, stretch=1)
+        chart_layout.addWidget(self.score_level_widget, stretch=1)
+
+        visual_layout.addLayout(chart_layout)
+
+        visual_note = QLabel(
+            "说明：柱状图横轴为样本序号，对应下方结果明细表；"
+            "图表仅用于批量样本间的相对比较，评分等级为软件内部评分分级，不作为农学诊断结论。"
+        )
+        visual_note.setWordWrap(True)
+        visual_note.setStyleSheet("font-size: 12px; color: #6B7280;")
+        visual_layout.addWidget(visual_note)
+
+        layout.addWidget(visual_card)
+
         table_card = QFrame()
         table_card.setObjectName("Card")
         table_layout = QVBoxLayout(table_card)
         table_layout.setContentsMargins(18, 16, 18, 18)
         table_layout.setSpacing(12)
 
+        table_title = QLabel("批量结果明细")
+        table_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #111827;")
+        table_layout.addWidget(table_title)
+
         self.table = QTableWidget()
+        self.table.setMinimumHeight(420)
         self.table.setColumnCount(11)
         self.table.setHorizontalHeaderLabels(
             [
@@ -223,7 +304,8 @@ class BatchAnalysisPage(QWidget):
 
         table_layout.addWidget(self.table)
 
-        layout.addWidget(table_card, stretch=1)
+        layout.addWidget(table_card)
+        layout.addStretch()
 
     def _load_default_scale(self) -> None:
         settings = self.settings_manager.load()
@@ -298,6 +380,8 @@ class BatchAnalysisPage(QWidget):
         self.btn_export_excel.setEnabled(False)
         self.btn_export_csv.setEnabled(False)
         self.summary_label.setText("尚未进行批量分析。")
+        self.insight_label.setText("尚未生成批量结果解释提示。")
+        self._reset_visualization()
 
         try:
             image_paths = self.analyzer.list_images(self.current_folder)
@@ -357,6 +441,8 @@ class BatchAnalysisPage(QWidget):
         self.current_summary = None
         self.table.setRowCount(0)
         self.summary_label.setText("正在统计批量分析结果...")
+        self.insight_label.setText("正在生成批量结果解释提示...")
+        self._reset_visualization()
 
         total = len(image_paths)
 
@@ -381,6 +467,8 @@ class BatchAnalysisPage(QWidget):
 
         self.current_summary = self.summary_calculator.calculate(self.batch_results)
         self.summary_label.setText(self._format_summary(self.current_summary))
+        self.insight_label.setText(self._format_insights(self.current_summary, self.batch_results))
+        self._update_visualization()
 
         success_count = self.current_summary.success_count
         fail_count = self.current_summary.failed_count
@@ -426,6 +514,119 @@ class BatchAnalysisPage(QWidget):
 
             self.table.setItem(row, col_index, item)
 
+    def _reset_visualization(self) -> None:
+        self.score_chart.set_data("长势评分柱状图", [], [], "")
+        self.height_chart.set_data("株高估算柱状图", [], [], " cm")
+        self.score_level_widget.set_scores([])
+
+    def _update_visualization(self) -> None:
+        success_items = [
+            item for item in self.batch_results
+            if item.success and item.metrics is not None
+        ]
+
+        labels = [item.sample_name for item in success_items]
+        scores = [float(item.metrics.growth_score) for item in success_items]
+        heights = [float(item.metrics.plant_height_cm) for item in success_items]
+
+        self.score_chart.set_data(
+            title="长势评分柱状图",
+            labels=labels,
+            values=scores,
+            unit="",
+            max_items=30,
+        )
+
+        self.height_chart.set_data(
+            title="株高估算柱状图",
+            labels=labels,
+            values=heights,
+            unit=" cm",
+            max_items=30,
+        )
+
+        self.score_level_widget.set_scores(scores)
+
+    def _format_insights(
+        self,
+        summary: BatchSummary,
+        results: list[BatchItemResult],
+    ) -> str:
+        if summary.total_count == 0:
+            return "当前没有可解释的批量分析结果。"
+
+        success_items_with_index = [
+            (index, item)
+            for index, item in enumerate(results, start=1)
+            if item.success and item.metrics is not None
+        ]
+
+        if not success_items_with_index:
+            return (
+                "当前批量分析未得到成功样本。建议检查图像格式、图像质量、拍摄背景，"
+                "或在“参数设置”中调整分割参数后重新分析。"
+            )
+
+        scores = [
+            (index, item.sample_name, float(item.metrics.growth_score))
+            for index, item in success_items_with_index
+        ]
+
+        scores_sorted = sorted(scores, key=lambda item: item[2])
+        lowest_index, lowest_name, lowest_score = scores_sorted[0]
+        highest_index, highest_name, highest_score = scores_sorted[-1]
+
+        low_score_items = [
+            item for item in scores
+            if item[2] < 60
+        ]
+
+        high_score_items = [
+            item for item in scores
+            if item[2] >= 80
+        ]
+
+        lines = [
+            f"本批次共分析 {summary.total_count} 张图像，成功 {summary.success_count} 张，失败 {summary.failed_count} 张，成功率 {summary.success_rate * 100:.2f}%。",
+            f"最高评分样本为第 {highest_index} 号（{highest_score:.2f}），最低评分样本为第 {lowest_index} 号（{lowest_score:.2f}）。",
+        ]
+
+        if low_score_items:
+            lines.append(
+                f"本批次有 {len(low_score_items)} 个样本评分低于 60，建议优先复核这些样本的图像质量、分割效果和实际秧苗状态。"
+            )
+
+            preview_items = low_score_items[:5]
+            preview_text = "；".join(
+                f"第 {index} 号 {score:.2f}"
+                for index, _, score in preview_items
+            )
+
+            if len(low_score_items) > 5:
+                preview_text += "；..."
+
+            lines.append(f"低评分样本提示：{preview_text}。")
+        else:
+            lines.append(
+                "本批次未出现评分低于 60 的样本，可结合明细表继续查看各样本之间的相对差异。"
+            )
+
+        if high_score_items:
+            lines.append(
+                f"评分不低于 80 的样本共 {len(high_score_items)} 个，可作为本批次相对较高评分样本进行对照查看。"
+            )
+
+        if summary.failed_count > 0:
+            lines.append(
+                "存在分析失败图像，建议查看明细表中的失败原因，并检查文件格式、图像读取情况或分割参数。"
+            )
+
+        lines.append(
+            "上述提示仅基于二维图像指标和软件内部评分生成，用于辅助筛查和复核，不作为农学诊断、品种评价或生产决策依据。"
+        )
+
+        return "\n".join(lines)
+
     def save_success_records(self) -> None:
         if not self.batch_results:
             QMessageBox.information(self, "提示", "暂无可保存的批量分析结果。")
@@ -438,7 +639,10 @@ class BatchAnalysisPage(QWidget):
 
         success_items = [
             item for item in self.batch_results
-            if item.success and item.metrics is not None and item.mask is not None and item.overlay is not None
+            if item.success
+            and item.metrics is not None
+            and getattr(item, "mask", None) is not None
+            and getattr(item, "overlay", None) is not None
         ]
 
         if not success_items:
@@ -605,9 +809,11 @@ class BatchAnalysisPage(QWidget):
 
         self.status_label.setText("已清空批量分析结果。")
         self.summary_label.setText("尚未进行批量分析。")
+        self.insight_label.setText("尚未生成批量结果解释提示。")
         self.btn_save_success.setEnabled(False)
         self.btn_export_excel.setEnabled(False)
         self.btn_export_csv.setEnabled(False)
+        self._reset_visualization()
         self._update_config_label()
 
     def _format_summary(self, summary: BatchSummary) -> str:
