@@ -544,3 +544,5 @@ LICENSE
 ```
 
 第三方依赖库的许可证以其官方发布条款为准。
+
+`docs/software_manual.md`：软件使用说明书初稿。
