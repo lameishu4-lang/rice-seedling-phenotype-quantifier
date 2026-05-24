@@ -545,4 +545,10 @@ LICENSE
 
 第三方依赖库的许可证以其官方发布条款为准。
 
-`docs/software_manual.md`：软件使用说明书初稿。
+## 文档说明
+
+本项目提供以下辅助文档：
+
+- `docs/function_checklist.md`：功能实现清单，用于记录 V1.0.0 版本已实现功能、所属模块和主要源码文件。
+- `docs/test_checklist.md`：测试清单，用于发布前逐项验证软件功能、异常处理、导出能力和 GitHub 仓库完整性。
+- `docs/software_manual.md`：软件使用说明书初稿，包含软件概述、功能模块、操作流程、导出说明和功能边界。
